@@ -1,0 +1,12 @@
+# Llama 3 decoding, baselines without vLLM, corpus building (Python 3.11, CUDA 12.1+ driver).
+#   pip install -r envs/requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121
+transformers==4.41.2
+tokenizers==0.19.1
+huggingface-hub==0.23.4
+accelerate==1.14.0
+safetensors==0.8.0
+sentencepiece==0.2.2
+numpy==2.4.6
+scipy==1.17.1
+tqdm==4.70.0

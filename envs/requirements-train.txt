@@ -1,0 +1,12 @@
+# Meta-token HMM training (training/train.py), installed on top of envs/requirements.txt:
+#   pip install -r envs/requirements-train.txt
+# jax-cuda12-plugin upgrades nvidia-cudnn-cu12 past the version torch 2.5.1 pins;
+# pip reports the conflict, and torch works with it.
+jax==0.10.2
+jaxlib==0.10.2
+jax-cuda12-plugin==0.10.2
+jax-cuda12-pjrt==0.10.2
+nvidia-cudnn-cu12==9.24.0.43
+equinox==0.13.8
+jaxtyping==0.3.11
+optax==0.2.8
