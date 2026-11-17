@@ -10,8 +10,9 @@ LM is steered toward plans that are valid, reach the goal, and stay likely
 under the LM.
 
 This repository has the decoder and our experiments on the Embodied Agent
-Interface (EAI) benchmark with Llama 3 8B Instruct: VirtualHome and BEHAVIOR,
-action sequencing (AS) and subgoal decomposition (SD).
+Interface (EAI) benchmark with two base LMs, Llama 3 8B Instruct and
+gpt-oss-20b: VirtualHome and BEHAVIOR, action sequencing (AS) and subgoal
+decomposition (SD).
 
 ## Quick start
 
@@ -37,6 +38,10 @@ and an arm (`trained` is Meta-Ctrl; `uniform`, `mask` and `syntax` are the
 ablations). Plans go to `outputs/`, scores to `results/`. Add `N=51` for a
 quick run on the first 51 tasks.
 
+For gpt-oss-20b, set `LM=gpt-oss` for both `scripts/download.sh lm` and
+`scripts/run.sh`, and run with the vLLM environment
+([REFERENCE.md](REFERENCE.md#environments)) as `PY`.
+
 To look at our outputs instead: `scripts/download.sh outputs`, then
 `python scripts/tables.py`.
 
@@ -46,7 +51,7 @@ To look at our outputs instead: `scripts/download.sh outputs`, then
 |---|---|
 | the task rules (preconditions, effects, goals) | `ctrlg/beta/`: `vh_state_machine.py` (VH AS), `sd_state_machine.py` (VH SD), `beh_state_machine.py` (BEH AS), `beh_sd_state_machine.py` (BEH SD); [DESIGN.md](DESIGN.md) |
 | the output format | `ctrlg/gamma/topdown/` (syntax automata) and the parsers in `ctrlg/two_level/` |
-| the LM | `--base_model`; `ctrlg/runner.py` (loading, end token) and `ctrlg/prompts.py` (chat format). The `uniform` arm works as is; `trained` needs an HMM trained on the new LM |
+| the LM | `--base_model`; `ctrlg/lm_family.py` (loading, chat format, end token; gpt-oss's reasoning channel) and `ctrlg/prompts.py`. The `uniform` arm works as is; `trained` needs an HMM trained on the new LM |
 | the HMM | `training/train_meta_hmm.sh` samples the LM, builds the corpus and trains |
 | the benchmark | copy `generate_vh_as.py`; DESIGN.md, "Building a new task" |
 | the lookahead | `--ctrlg_scale` (strength), `--max_budget` (plan length) on any `generate_*.py` |

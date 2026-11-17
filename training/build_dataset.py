@@ -24,6 +24,7 @@ A continuation is kept if
 and yields at least one meta-token before EOS.
 """
 import argparse
+import functools
 import json
 import os
 import re
@@ -35,12 +36,13 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from corpus_filter import build_spec, first_accept  # noqa: E402
+from ctrlg.lm_family import is_harmony  # noqa: E402
 from semantic import (  # noqa: E402
     behavior_output_text_to_semantic_tokens,
     parse_virtualhome_json_pairs_prefix,
@@ -56,13 +58,18 @@ def load_vocab(vocab_json: str) -> Tuple[Dict[str, int], int, int]:
     return tok2id, tok2id["EOS"], tok2id["UNK"]
 
 
+# gpt-oss answers in harmony format: keep only the final channel.
+_FINAL_RE = re.compile(r"<\|channel\|>final<\|message\|>(.*?)(?:<\|end\|>|<\|return\|>|\Z)", re.DOTALL)
 _SPECIAL_RE = re.compile(r"<\|[^|<>]{1,40}\|>")
 _CODE_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n?(.*?)\n?\s*```\s*$", re.DOTALL)
 
 
 def answer_text(raw_with_specials: str) -> str:
-    """The answer without special tokens and without a surrounding code fence."""
-    body = _SPECIAL_RE.sub("", raw_with_specials).strip()
+    """The final-channel body (gpt-oss) or the text without special tokens (Llama),
+    without a surrounding code fence."""
+    m = _FINAL_RE.search(raw_with_specials)
+    body = m.group(1) if m else raw_with_specials
+    body = _SPECIAL_RE.sub("", body).strip()
     cf = _CODE_FENCE_RE.match(body)
     return cf.group(1).strip() if cf else body
 
@@ -95,6 +102,27 @@ def extract_balanced(text: str, open_ch: str, close_ch: str) -> str:
     return ""
 
 
+@functools.lru_cache(maxsize=1)
+def embedding_model(base_model: str, dtype: torch.dtype, device: torch.device):
+    """The LM for the prompt embeddings, loaded once for both simulators.
+
+    gpt-oss is dequantized from MXFP4 to bf16 (about 42 GB) and its layers are
+    split over the visible GPUs in proportion to their free memory (automatic
+    placement sizes them before dequantization). Batch size 2 then needs about
+    9 GB of activations per GPU on the 4,289-token BEHAVIOR prompts; batch size
+    1 halves that, with slightly different bf16 rounding."""
+    if not is_harmony(base_model):
+        return AutoModelForCausalLM.from_pretrained(base_model, torch_dtype=dtype, device_map=None).to(device).eval()
+    from transformers import Mxfp4Config
+    n_gpu, n_layers = torch.cuda.device_count(), AutoConfig.from_pretrained(base_model).num_hidden_layers
+    free = np.array([torch.cuda.mem_get_info(i)[0] for i in range(n_gpu)], dtype=float)
+    bounds = np.cumsum(free) / free.sum() * n_layers
+    device_map = {"model.embed_tokens": 0, "model.rotary_emb": 0, "model.norm": n_gpu - 1, "lm_head": n_gpu - 1,
+                  **{f"model.layers.{i}": int(np.searchsorted(bounds, i + 0.5)) for i in range(n_layers)}}
+    return AutoModelForCausalLM.from_pretrained(base_model, dtype=torch.bfloat16, device_map=device_map,
+                                                quantization_config=Mxfp4Config(dequantize=True)).eval()
+
+
 @torch.inference_mode()
 def prompt_end_embeddings(base_model: str, prompts_npz: str, device: torch.device, batch_size: int,
                           dtype: torch.dtype) -> np.ndarray:
@@ -102,8 +130,8 @@ def prompt_end_embeddings(base_model: str, prompts_npz: str, device: torch.devic
     d = np.load(prompts_npz, allow_pickle=True)
     prompts = d["prompts"].astype(np.int64, copy=False)
     pad_id = int(d.get("pad_id", 0))
-    model = AutoModelForCausalLM.from_pretrained(base_model, torch_dtype=dtype, device_map=None).to(device)
-    model.eval()
+    model = embedding_model(base_model, dtype, device)
+    device = model.get_input_embeddings().weight.device
     out = np.zeros((prompts.shape[0], model.config.hidden_size), dtype=np.float32)
     for start in range(0, prompts.shape[0], batch_size):
         batch = torch.from_numpy(prompts[start:start + batch_size]).to(device)
@@ -362,7 +390,7 @@ def main():
     ap.add_argument("--max_samples", type=int, default=0, help="read at most this many rows per domain")
     ap.add_argument("--no_embeddings", action="store_true")
     ap.add_argument("--emb_batch_size", type=int, default=8)
-    ap.add_argument("--emb_dtype", default="float16", help="dtype of the LM for the prompt embeddings")
+    ap.add_argument("--emb_dtype", default="float16", help="dtype of the LM for the prompt embeddings (gpt-oss: always bfloat16)")
     args = ap.parse_args()
     write_dataset(args, "behavior", args.behavior_samples, args.behavior_prompts,
                   os.path.join(args.out_root, "behavior"))

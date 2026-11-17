@@ -21,6 +21,7 @@ from transformers import LogitsProcessor
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import ctrlg
+from ctrlg import lm_family as LF
 from ctrlg.beta.backward_dp import BetaBackwardDP, SemanticVocab
 from ctrlg.beta.sd_state_machine import SDBetaStateMachine
 from ctrlg.beta.sd_vocab import load_sd_semantic_vocab
@@ -28,7 +29,6 @@ from ctrlg.beta.uniform_meta import resolve_uniform_logw
 from ctrlg.gamma.topdown.compile import compile_topdown
 from ctrlg.gamma.topdown.subgoal_decomp import SDStateMachine, enumerate_gamma_valid_predicates, parse_sd_prompt
 from ctrlg.models import SemanticHMM, compute_prompt_end_embedding, load_semantic_hmm
-from ctrlg.prompts import prompt_ids as build_prompt_ids
 from ctrlg.runner import FALLBACK_NO_PLAN, add_common_args, eot_id, load_lm, run_prompts
 from ctrlg.two_level.candidates import SubgoalDecompCandidateTracker
 from ctrlg.two_level.processor import TwoLevelProcessor
@@ -41,7 +41,7 @@ MAX_NEW_TOKENS = 2048
 
 
 def build_chat_prompt(tokenizer, user_prompt: str) -> List[int]:
-    return build_prompt_ids(tokenizer, "virtualhome", "SD", user_prompt)
+    return LF.prompt_ids(tokenizer, "virtualhome", "SD", user_prompt)
 
 
 def build_id_mapping(objects):
@@ -71,11 +71,12 @@ class SDStateMask(LogitsProcessor):
 def generate_syntax_only(model, tokenizer, prompt_text: str, max_new_tokens: int, device: str) -> str:
     objects, properties, categories, _, _, _ = parse_sd_prompt(prompt_text)
     sm = SDStateMachine(tokenizer, objects, properties, categories, eot_id(tokenizer))
-    prompt_ids = build_chat_prompt(tokenizer, prompt_text)
+    prompt_ids = LF.prefill_final(tokenizer, build_chat_prompt(tokenizer, prompt_text))
     with torch.no_grad():
         out = model.generate(torch.tensor([prompt_ids], device=device), max_new_tokens=max_new_tokens,
-                             do_sample=False, logits_processor=[SDStateMask(sm, len(prompt_ids))])
-    return tokenizer.decode(out[0, len(prompt_ids):], skip_special_tokens=True)
+                             do_sample=False, logits_processor=[SDStateMask(sm, len(prompt_ids))],
+                             **LF.generate_kwargs(tokenizer))
+    return LF.answer_text(tokenizer, out[0, len(prompt_ids):])
 
 
 def generate_two_level(model, tokenizer, prompt_text: str, *, vocab_size: int,
@@ -117,13 +118,15 @@ def generate_two_level(model, tokenizer, prompt_text: str, *, vocab_size: int,
         gamma_dfa=sm, candidate_tracker=tracker, beta_lookahead=beta_sm, beta_dp=beta_dp,
         beta_initial_belief=beta_init, max_meta_budget=max_budget, ctrlg_scale=ctrlg_scale,
         block_start_fn=lambda gs: isinstance(gs, tuple) and gs[0] == "PREFIX" and gs[1] == prefix_len,
-        eos_gate_phase="AFTER_STEP", close_tokens=set(sm.close_seq), device=device, debug=debug)
+        eos_gate_phase="AFTER_STEP", close_tokens=set(sm.close_seq), device=device, debug=debug,
+        **LF.processor_kwargs(tokenizer))
     with torch.no_grad():
         out = model.generate(torch.tensor([prompt_ids], device=device), do_sample=False,
-                             max_new_tokens=max_new_tokens, logits_processor=[processor])
+                             max_new_tokens=LF.generation_budget(tokenizer, max_new_tokens),
+                             logits_processor=[processor], **LF.generate_kwargs(tokenizer))
     stats = dict(processor.get_stats(), mode="two_level", beta_states=int(beta_sm.num_states),
                  goals_dropped=n_dropped, dp_budget=max_budget)
-    return {"llm_output": tokenizer.decode(out[0, len(prompt_ids):], skip_special_tokens=True), "stats": stats}
+    return {"llm_output": LF.answer_text(tokenizer, out[0, len(prompt_ids):]), "stats": stats}
 
 
 def main():

@@ -23,6 +23,7 @@ from transformers import LogitsProcessorList
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import ctrlg
+from ctrlg import lm_family as LF
 from ctrlg.beta.backward_dp import BetaBackwardDP, SemanticVocab
 from ctrlg.beta.uniform_meta import resolve_uniform_logw
 from ctrlg.beta.vh_state_machine import MAX_STATES as VH_MAX_STATES, VHBetaStateMachine, VHStep
@@ -30,7 +31,6 @@ from ctrlg.common.constants import NEG_INF
 from ctrlg.gamma.topdown.compile import compile_topdown
 from ctrlg.gamma.topdown.virtualhome import VHStateMachine, build_vh_state_machine
 from ctrlg.models import SemanticHMM, compute_prompt_end_embedding, load_semantic_hmm
-from ctrlg.prompts import prompt_ids as build_prompt_ids
 from ctrlg.runner import FALLBACK_NO_PLAN, FALLBACK_SIZE, add_common_args, eot_id, load_lm, run_prompts
 from ctrlg.two_level.candidates import VirtualHomeCandidateTracker
 from ctrlg.two_level.processor import TwoLevelProcessor
@@ -112,7 +112,7 @@ def generate_one(model, tokenizer, prompt: Dict, *, vocab_size: int, mask_eos_id
                                               canonical_id_to_obj=obj_list)
         dfa_model = ctrlg.DFAModel(compile_topdown(gamma_sm, vocab_size, debug=debug), vocab_size).to(device)
 
-        prompt_ids = build_prompt_ids(tokenizer, "virtualhome", "AS", prompt_text)
+        prompt_ids = LF.prompt_ids(tokenizer, "virtualhome", "AS", prompt_text)
 
         beta_init = None
         if semantic_hmm is not None and semantic_hmm.nn_proj is not None:
@@ -127,21 +127,23 @@ def generate_one(model, tokenizer, prompt: Dict, *, vocab_size: int, mask_eos_id
             mask_only = beta_dp.compute_log_M(rho, beta_dp.initial_state_id, max_budget).item() <= NEG_INF / 2
 
         if mask_only:
+            prompt_ids = LF.prefill_final(tokenizer, prompt_ids)
             processor = TokenMask(dfa_model, prompt_ids, vocab_size, mask_eos_id, device)
         else:
             processor = TwoLevelProcessor(
                 dfa_model, vocab_size=vocab_size, eos_token_id=mask_eos_id, prompt_ids=prompt_ids,
                 tokenizer=tokenizer, gamma_dfa=gamma_sm, candidate_tracker=tracker, beta_lookahead=beta_sm,
                 beta_dp=beta_dp, beta_initial_belief=beta_init, max_meta_budget=max_budget,
-                ctrlg_scale=ctrlg_scale, device=device, debug=debug)
+                ctrlg_scale=ctrlg_scale, device=device, debug=debug, **LF.processor_kwargs(tokenizer))
 
         ids = torch.tensor([prompt_ids], device=device)
         with torch.no_grad():
             out = model.generate(
                 input_ids=ids, attention_mask=torch.ones_like(ids), do_sample=False,
-                max_new_tokens=max_new_tokens,
-                logits_processor=LogitsProcessorList([processor]), pad_token_id=tokenizer.pad_token_id)
-        result["llm_output"] = tokenizer.decode(out[0][len(prompt_ids):], skip_special_tokens=True)
+                max_new_tokens=max_new_tokens if mask_only else LF.generation_budget(tokenizer, max_new_tokens),
+                logits_processor=LogitsProcessorList([processor]), pad_token_id=tokenizer.pad_token_id,
+                **LF.generate_kwargs(tokenizer))
+        result["llm_output"] = LF.answer_text(tokenizer, out[0][len(prompt_ids):])
         decoding = {"mode": "syntax_mask" if mask_only else "two_level"}
         if beta_sm is not None:
             decoding["goals_dropped"] = len(beta_sm.dropped_contradictory_goals) + len(beta_sm.dropped_edge_goals)

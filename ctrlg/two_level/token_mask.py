@@ -17,9 +17,13 @@ class TokenMask(LogitsProcessor):
         self.vocab_size = int(vocab_size)
         self.eos_token_id = int(eos_token_id)
         self.device = device
+        self.reset_prompt(prompt_ids)
+        self.state = dfa_model.initial_state
+
+    def reset_prompt(self, prompt_ids: List[int]) -> None:
+        """Treat `prompt_ids` as the prompt; later tokens are generated output."""
         self.prompt_len = len(prompt_ids)
         self._n_seen = 0
-        self.state = dfa_model.initial_state
 
     def get_stats(self) -> dict:
         return {"generated_tokens": self._n_seen}

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Regenerate and evaluate every Llama 3 8B cell of Tables 1, 2 and 6 (16 cells:
-# 4 modules x 4 arms), then rebuild the tables. Cells whose results exist are skipped.
+# Generate and evaluate every Llama 3 8B run (16: 4 modules x 4 arms), then print the
+# tables. Runs whose results exist are skipped.
 #
 #   PY=<decoding python> EVAL_PY=<evaluator python> scripts/run_all.sh
 #

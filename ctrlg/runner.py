@@ -9,6 +9,8 @@ from typing import Callable, Dict, List
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from . import lm_family as LF
+
 BASE_MODEL = "models/Meta-Llama-3-8B-Instruct"
 
 # How a task was decoded, written into every generation record:
@@ -52,6 +54,9 @@ def load_lm(base_model: str, cuda_device: str):
     tokenizer = AutoTokenizer.from_pretrained(base_model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    if LF.is_harmony(base_model):
+        model = LF.load_harmony_lm(base_model, device)
+        return tokenizer, model, int(model.config.vocab_size), device
     model = AutoModelForCausalLM.from_pretrained(
         base_model, torch_dtype=torch.float16 if device.startswith("cuda") else torch.float32,
         low_cpu_mem_usage=True).to(device)
@@ -60,9 +65,9 @@ def load_lm(base_model: str, cuda_device: str):
 
 
 def eot_id(tokenizer) -> int:
-    """End-of-turn token that closes a plan: `<|eot_id|>` for Llama 3, else the tokenizer's EOS."""
-    vocab = tokenizer.get_vocab()
-    return int(vocab["<|eot_id|>"]) if "<|eot_id|>" in vocab else int(tokenizer.eos_token_id)
+    """End-of-turn token that closes a plan: `<|eot_id|>` for Llama 3, `<|return|>` for gpt-oss,
+    else the tokenizer's EOS."""
+    return LF.eos_id(tokenizer)
 
 
 def _indices(args, n: int) -> List[int]:

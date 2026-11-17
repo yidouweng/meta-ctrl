@@ -102,6 +102,11 @@ class TwoLevelProcessor(LogitsProcessor):
         block_start_fn: gamma state -> True at the start of an action block.
         eos_gate_phase: gamma phase at which the plan may be closed.
         close_tokens: tokens that close the plan at `eos_gate_phase`.
+        pre_dfa_signpost, warmup_block_ids, warmup_force_ids, warmup_max_tokens:
+            harmony-format models (gpt-oss) write an analysis channel first. Until
+            `pre_dfa_signpost` appears the logits pass through except
+            `warmup_block_ids`; after `warmup_max_tokens` analysis tokens
+            `warmup_force_ids` are forced. None: no warmup (Llama).
     """
 
     def __init__(self, dfa_model, *, vocab_size: int, eos_token_id: int, prompt_ids: List[int],
@@ -109,7 +114,10 @@ class TwoLevelProcessor(LogitsProcessor):
                  beta_dp=None, beta_initial_belief=None, max_meta_budget: int = 20,
                  ctrlg_scale: float = 1.0, block_start_fn=None,
                  eos_gate_phase: str = "BLOCK_BOUNDARY", close_tokens=None,
-                 device: str = "cuda", debug: bool = False):
+                 pre_dfa_signpost: Optional[List[int]] = None,
+                 warmup_block_ids: Optional[List[int]] = None,
+                 warmup_force_ids: Optional[List[int]] = None,
+                 warmup_max_tokens: int = 1024, device: str = "cuda", debug: bool = False):
         self.device = device
         self.debug = debug
         self.tokenizer = tokenizer
@@ -124,6 +132,18 @@ class TwoLevelProcessor(LogitsProcessor):
         self._block_start_fn = block_start_fn
         self._eos_gate_phase = eos_gate_phase
         self._close_tokens = close_tokens
+
+        self._pre_dfa_signpost = [int(t) for t in pre_dfa_signpost] if pre_dfa_signpost else None
+        self._warmup = self._pre_dfa_signpost is not None
+        self._has_warmup = self._warmup
+        self._warmup_block_ids = [int(t) for t in (warmup_block_ids or [])]
+        self._warmup_force_ids = ([int(t) for t in warmup_force_ids] if warmup_force_ids
+                                  else list(self._pre_dfa_signpost or []))
+        self._warmup_max_tokens = int(warmup_max_tokens)
+        self._warmup_start_len = len(prompt_ids)
+        self._warmup_tokens = 0
+        self._warmup_forced = False
+        self._force_pos = -1
 
         if beta_initial_belief is not None:
             self._beta_belief = beta_initial_belief.to(device)
@@ -164,6 +184,11 @@ class TwoLevelProcessor(LogitsProcessor):
     # ------------------------------------------------------------------ step
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
         self._step_count += 1
+        if self._warmup:
+            if self._tail_matches(input_ids, self._pre_dfa_signpost):
+                self._exit_warmup(input_ids)
+            else:
+                return self._warmup_logits(input_ids, scores)
 
         masked = self._mask(input_ids, scores)
         valid_mask = masked[0] > NEG_INF
@@ -530,10 +555,44 @@ class TwoLevelProcessor(LogitsProcessor):
         return True
 
     def get_stats(self) -> Dict[str, Any]:
-        return {"step_count": self._step_count, "block_starts": self._block_starts,
-                "completions": self._completions, "block_aborts": self._block_aborts,
-                "dead_end_blocks": self._dead_end_blocks,
-                "precondition_only_steps": self._precondition_only_steps,
-                "forced_closes": self._forced_closes, "violations": self._violations,
-                "meta_budget": self._meta_budget,
-                "completed_actions": len(self._completed_actions), "beta_state": self._beta_state_id}
+        stats = {"step_count": self._step_count, "block_starts": self._block_starts,
+                 "completions": self._completions, "block_aborts": self._block_aborts,
+                 "dead_end_blocks": self._dead_end_blocks,
+                 "precondition_only_steps": self._precondition_only_steps,
+                 "forced_closes": self._forced_closes, "violations": self._violations,
+                 "meta_budget": self._meta_budget,
+                 "completed_actions": len(self._completed_actions), "beta_state": self._beta_state_id}
+        if self._has_warmup:
+            stats.update(warmup_tokens=self._warmup_tokens, warmup_forced=self._warmup_forced)
+        return stats
+
+    # ------------------------------------------------- harmony warmup (gpt-oss)
+    @staticmethod
+    def _tail_matches(input_ids: torch.LongTensor, seq: List[int]) -> bool:
+        n = len(seq)
+        return bool(n) and input_ids.shape[1] >= n and input_ids[0, -n:].tolist() == list(seq)
+
+    def _warmup_logits(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        self._warmup_tokens = int(input_ids.shape[1]) - self._warmup_start_len
+        force = self._warmup_force_ids
+        if self._force_pos < 0 and force and self._warmup_tokens >= self._warmup_max_tokens:
+            self._force_pos = 0
+            self._warmup_forced = True
+        if self._force_pos >= 0:
+            out = torch.full_like(scores, NEG_INF)
+            out[:, force[min(self._force_pos, len(force) - 1)]] = 0.0
+            self._force_pos += 1
+            return out
+        if not self._warmup_block_ids:
+            return scores
+        out = scores.clone()
+        out[:, self._warmup_block_ids] = NEG_INF
+        return out
+
+    def _exit_warmup(self, input_ids: torch.LongTensor) -> None:
+        """From here on, everything generated so far counts as prompt."""
+        ids = input_ids[0].tolist()
+        self._warmup_tokens = len(ids) - self._warmup_start_len
+        self._prompt_ids = ids
+        self._mask.reset_prompt(ids)
+        self._warmup = False

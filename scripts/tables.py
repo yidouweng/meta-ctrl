@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild the paper's Llama 3 8B EAI numbers from the evaluator outputs in results/.
+"""Print the EAI tables from the evaluator outputs in results/.
 
     python scripts/tables.py           # print every table
     python scripts/tables.py --check   # also compare each cell with the expected value
@@ -60,6 +60,7 @@ def _arm(lm, arm):
 
 
 LLAMA = _arm("llama", "trained")
+GPT_OSS = _arm("gpt-oss", "trained")
 ABLATION = [
     ("Classical planner, full domain", ("planner_vh_as", "planner_beh_as", None, None)),
     ("Search, no LLM (our automata)", ("search_vh_as", "search_beh_as", "search_vh_sd", "search_beh_sd")),
@@ -73,6 +74,7 @@ XGRAMMAR = [("XGrammar (syntax only)", ("xgrammar_vh_as", "xgrammar_beh_as", "xg
 # Expected values (task, exec), used by --check.
 EXPECTED = {
     "Llama 3 8B + Meta-Ctrl": [(88.9, 97.7), (43.0, 94.0), (91.1, 96.2), (45.0, 61.0)],
+    "gpt-oss-20b + Meta-Ctrl": [(88.9, 96.7), (52.0, 93.0), (89.9, 93.2), (38.0, 61.0)],
     "Classical planner, full domain": [(47.2, 84.6), (13.0, 37.0), None, None],
     "Search, no LLM (our automata)": [(82.3, 93.1), (31.0, 77.0), (80.5, 86.7), (52.0, 64.0)],
     "+ syntax (gamma mask, no lookahead)": [(2.0, 97.4), (12.0, 17.0), (0.0, 95.9), (0.0, 61.0)],
@@ -143,11 +145,11 @@ def holdout():
     return out
 
 
-CALIBRATION = {c: f"calib_llama_c{c}" for c in (2, 3, 4)}
-EXPECTED_CALIBRATION = {2: 9, 3: 8, 4: 9}  # successes on the 20 calibration tasks
+MAIN = {"llama": LLAMA, "gpt-oss": GPT_OSS}
+EXPECTED_CALIBRATION = {"llama": {2: 9, 3: 8, 4: 9}, "gpt-oss": {2: 7, 3: 6, 4: 6}}  # successes on the 20 tasks
 
 
-def calibration():
+def calibration(lm: str):
     """Task successes of the lookahead calibration search: BEHAVIOR SD, the 20
     tasks with prompt index divisible by five. The evaluator scores all 100
     identifiers, so the summary rate is not a rate over the 20; count instead.
@@ -156,10 +158,10 @@ def calibration():
     prompts = json.load(open("data/prompts/behavior/subgoal_decomposition/subgoal_decomposition_prompts.json"))
     tasks = {p["identifier"] for p in prompts[::5]}
     out = {}
-    for c, run in CALIBRATION.items():
-        f = R / f"{run}_eval/behavior/evaluate_results/subgoal_decomposition/log/merged.json"
+    for c in (2, 3, 4):
+        f = R / f"calib_{lm}_c{c}_eval/behavior/evaluate_results/subgoal_decomposition/log/merged.json"
         if not f.exists() and c == 2:
-            f = R / f"{LLAMA[3]}_eval/behavior/evaluate_results/subgoal_decomposition/log/merged.json"
+            f = R / f"{MAIN[lm][3]}_eval/behavior/evaluate_results/subgoal_decomposition/log/merged.json"
         if f.exists():
             out[c] = sum(bool(v.get("success")) for k, v in json.load(open(f)).items() if k in tasks)
     return out
@@ -178,7 +180,7 @@ def main():
     R = Path(args.results)
     if not R.is_dir():
         sys.exit(f"no {R}/ directory: run `scripts/download.sh outputs` first, or pass --results")
-    tables = [("Main table (Meta-Ctrl row)", [("Llama 3 8B + Meta-Ctrl", LLAMA)]),
+    tables = [("Main table (Meta-Ctrl rows)", [("Llama 3 8B + Meta-Ctrl", LLAMA), ("gpt-oss-20b + Meta-Ctrl", GPT_OSS)]),
               ("Ablation (Llama 3 8B)", ABLATION), ("XGrammar appendix", XGRAMMAR)]
     bad = 0
     for title, rows in tables:
@@ -213,13 +215,14 @@ def main():
             line += f"  MISMATCH, expected {EXPECTED_HOLDOUT[module]}"
         print(line)
     print(f"largest |z| between the splits: {max(zs):.2f}")
-    cal = calibration()
-    line = "\nLookahead calibration, BEHAVIOR SD, 20 tasks (successes): " + \
-        ", ".join(f"c = {c}: {n}/20" for c, n in cal.items())
-    if args.check and cal != EXPECTED_CALIBRATION:
-        bad += 1
-        line += f"  MISMATCH, expected {EXPECTED_CALIBRATION}"
-    print(line)
+    print("\nLookahead calibration, BEHAVIOR SD, 20 tasks (successes)")
+    for lm in MAIN:
+        cal = calibration(lm)
+        line = f"{lm:9}" + ", ".join(f"c = {c}: {n}/20" for c, n in cal.items())
+        if args.check and cal != EXPECTED_CALIBRATION[lm]:
+            bad += 1
+            line += f"  MISMATCH, expected {EXPECTED_CALIBRATION[lm]}"
+        print(line)
     if args.check:
         print("\nall cells match" if not bad else f"\n{bad} cells differ from the expected values")
         sys.exit(1 if bad else 0)

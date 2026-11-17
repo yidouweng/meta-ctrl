@@ -57,7 +57,10 @@ def main():
     ap.add_argument("--train_fraction", type=float, default=0.70)
     ap.add_argument("--batch_size", type=int, default=512, help="samples per prompt per generate() call")
     ap.add_argument("--prompt_batch_size", type=int, default=16)
-    ap.add_argument("--dtype", default="auto", help="vLLM dtype")
+    ap.add_argument("--dtype", default="auto", help="vLLM dtype (gpt-oss: bfloat16)")
+    ap.add_argument("--reasoning_effort", default=None, help="gpt-oss chat template: low|medium|high")
+    ap.add_argument("--date", default=None,
+                    help="gpt-oss: the 'Current date:' the chat template stamps in (default: today)")
     ap.add_argument("--gpu_memory_utilization", type=float, default=0.94)
     ap.add_argument("--max_model_len", type=int, default=None)
     ap.add_argument("--max_num_seqs", type=int, default=None)
@@ -72,7 +75,8 @@ def main():
     tok = AutoTokenizer.from_pretrained(args.model, use_fast=False)
     if tok.pad_token_id is None:
         tok.pad_token = tok.eos_token
-    texts = [chat_text(tok, args.dataset, args.module, p["llm_prompt"]) for p in train]
+    texts = [chat_text(tok, args.dataset, args.module, p["llm_prompt"],
+                       reasoning_effort=args.reasoning_effort, date=args.date) for p in train]
 
     out = args.output_dir
     os.makedirs(os.path.join(out, "shards"), exist_ok=True)
@@ -92,7 +96,7 @@ def main():
                         identifiers=np.array(split_info["train_identifiers"], dtype=object), t_max=width,
                         pad_id=tok.pad_token_id, vocab_size=tok.vocab_size)
     json.dump({"model": args.model, "dataset": args.dataset, "module": args.module, "system_prompt": system,
-               "total_samples": args.total_samples,
+               "reasoning_effort": args.reasoning_effort, "total_samples": args.total_samples,
                "continuation_length": args.continuation_length, "temperature": args.temperature,
                "top_p": args.top_p, "seed": args.seed, "train_fraction": args.train_fraction,
                "pad_id": tok.pad_token_id, "eos_id": tok.eos_token_id},

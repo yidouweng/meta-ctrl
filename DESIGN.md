@@ -18,6 +18,13 @@ The arms differ only in the lookahead's weights: `trained` uses the trained
 HMM, `uniform` counts valid plans, `mask` only checks one exists, `syntax`
 drops β.
 
+**Reasoning models.** gpt-oss-20b writes an analysis channel, then
+`<|channel|>final<|message|>` and its answer. The analysis is generated
+unconstrained (reasoning effort low; after 1,024 tokens the final channel is
+opened) and is not scored; both automata start at the final channel
+(`ctrlg/lm_family.py`). Its HMM is trained on the final channel of its own
+samples.
+
 ## Writing semantic automata
 
 Most task knowledge lives in `ctrlg/beta/`.
@@ -51,7 +58,7 @@ If β exceeds its cap, or no accepting plan fits in the plan length, the task
 is decoded with γ alone (`mode: syntax_mask`): well formed, but semantics not
 enforced. If decoding reaches a dead end, the decoder still masks every action
 β forbids. The guarantee holds for every task not decoded with γ alone. In
-this release, 22 of 880 tasks fall back, the same in every arm:
+this release, 22 of 880 tasks fall back, the same in every arm and for both LMs:
 
 | Reason | Tasks |
 |---|---|

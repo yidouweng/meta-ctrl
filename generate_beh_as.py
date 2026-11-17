@@ -22,12 +22,12 @@ from transformers import LogitsProcessorList
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import ctrlg
+from ctrlg import lm_family as LF
 from ctrlg.beta.backward_dp import BetaBackwardDP, SemanticVocab
 from ctrlg.beta.beh_goal_expander import expand_goals
 from ctrlg.beta.beh_state_machine import BehBetaStateMachine, parse_beh_states
 from ctrlg.beta.uniform_meta import resolve_uniform_logw
 from ctrlg.gamma.topdown.behavior_twolevel import build_beh_twolevel_state_machine
-from ctrlg.prompts import prompt_ids as build_prompt_ids
 from ctrlg.models import compute_prompt_end_embedding, load_semantic_hmm
 from ctrlg.runner import FALLBACK_NO_PLAN, add_common_args, eot_id, load_lm, run_prompts
 from ctrlg.two_level.beh_candidates import BehaviorTwoLevelCandidateTracker
@@ -58,7 +58,7 @@ SIMPLE_GOALS = (
 
 
 def build_prompt(tokenizer, user_prompt: str) -> List[int]:
-    return build_prompt_ids(tokenizer, "behavior", "AS", user_prompt)
+    return LF.prompt_ids(tokenizer, "behavior", "AS", user_prompt)
 
 
 def parse_objects(prompt_text: str) -> List[Dict]:
@@ -151,12 +151,13 @@ def lookahead_budget(num_states: int, max_budget: int) -> int:
 
 def _mask_only(model, tokenizer, prompt_ids, dfa_model, vocab_size, eos_id, device, max_new_tokens) -> str:
     """Decode with the syntax mask alone."""
+    prompt_ids = LF.prefill_final(tokenizer, prompt_ids)
     mask = TokenMask(dfa_model, prompt_ids, vocab_size, eos_id, device)
     with torch.no_grad():
         out = model.generate(torch.tensor([prompt_ids], device=device), max_new_tokens=max_new_tokens, do_sample=False,
                              pad_token_id=tokenizer.pad_token_id or eos_id,
-                             logits_processor=LogitsProcessorList([mask]))
-    return tokenizer.decode(out[0, len(prompt_ids):], skip_special_tokens=True)
+                             logits_processor=LogitsProcessorList([mask]), **LF.generate_kwargs(tokenizer))
+    return LF.answer_text(tokenizer, out[0, len(prompt_ids):])
 
 
 def generate_one(prompt: Dict, tokenizer, model, *, vocab_size, eos_id, semantic_hmm, semantic_vocab, max_budget,
@@ -198,15 +199,17 @@ def generate_one(prompt: Dict, tokenizer, model, *, vocab_size, eos_id, semantic
         gamma_dfa=sm, candidate_tracker=tracker, beta_lookahead=beta_sm, beta_dp=beta_dp,
         beta_initial_belief=beta_init, max_meta_budget=max_budget, ctrlg_scale=ctrlg_scale,
         block_start_fn=lambda gs: gs == ("PREFIX", prefix_len), eos_gate_phase="AFTER_DICT",
-        close_tokens={t for t, d in sm._after_dict_alts.items() if d == "close"}, device=device, debug=debug)
+        close_tokens={t for t, d in sm._after_dict_alts.items() if d == "close"}, device=device, debug=debug,
+        **LF.processor_kwargs(tokenizer))
     with torch.no_grad():
         out = model.generate(torch.tensor([prompt_ids], device=device),
-                             max_new_tokens=max_new_tokens, do_sample=False, logits_processor=[processor])
+                             max_new_tokens=LF.generation_budget(tokenizer, max_new_tokens), do_sample=False,
+                             logits_processor=[processor], **LF.generate_kwargs(tokenizer))
     ps = processor.get_stats()
     stats.update(mode="two_level", n_actions=ps["completed_actions"], is_accept=beta_sm.is_accept(ps["beta_state"]),
                  meta_budget_remaining=ps["meta_budget"], dp_budget=dp_budget,
-                 **{k: ps[k] for k in GUARANTEE_STATS})
-    return {"llm_output": tokenizer.decode(out[0, len(prompt_ids):], skip_special_tokens=True), "stats": stats}
+                 **{k: ps[k] for k in GUARANTEE_STATS + ("warmup_tokens", "warmup_forced") if k in ps})
+    return {"llm_output": LF.answer_text(tokenizer, out[0, len(prompt_ids):]), "stats": stats}
 
 
 def main():

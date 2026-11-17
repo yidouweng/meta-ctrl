@@ -1,9 +1,11 @@
-# vLLM environment: meta-token HMM sampling (training/sample.py) and the XGrammar baseline
-# (baselines/xgrammar_*.py). Python 3.11, CUDA 12.8 driver.
+# vLLM environment: meta-token HMM sampling (training/sample.py), the XGrammar baseline
+# (baselines/xgrammar_*.py), and all gpt-oss-20b steps (decoding, corpus building).
+# Python 3.11, CUDA 12.8 driver.
 torch==2.8.0
 vllm==0.11.0
 transformers==4.57.6
 accelerate==1.15.0
 xgrammar==0.1.25
+kernels==0.10.4
 numpy==2.2.6
 ninja

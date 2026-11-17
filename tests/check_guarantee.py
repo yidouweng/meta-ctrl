@@ -44,7 +44,7 @@ sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)  # the drivers read data/ and models/ relative to the repo
 
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoConfig, AutoTokenizer
 
 import ctrlg
 from ctrlg.beta import backward_dp
@@ -53,7 +53,7 @@ from ctrlg.models import load_semantic_hmm
 from ctrlg.runner import eot_id
 from ctrlg.two_level.processor import GUARANTEE_STATS, TwoLevelProcessor, _Step
 
-VOCAB_SIZE = 128256  # Llama 3
+VOCAB_SIZE = 128256  # Llama 3; set from --base_model
 DEV = "cpu"
 TRAINED = {"as": "models/meta-hmm-as",
            "sd": "models/meta-hmm-sd"}
@@ -296,6 +296,8 @@ def main():
         from ctrlg.beta.sd_vocab import load_sd_semantic_vocab
         vocab = load_sd_semantic_vocab(hmm_dir, "virtualhome" if args.module == "vh_sd" else "behavior")
     tok = AutoTokenizer.from_pretrained(args.base_model)
+    global VOCAB_SIZE
+    VOCAB_SIZE = int(AutoConfig.from_pretrained(args.base_model).vocab_size)
     strs = [tok.decode([i]) for i in range(len(tok))]
     eos = eot_id(tok)
 
